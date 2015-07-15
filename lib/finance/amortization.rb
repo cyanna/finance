@@ -69,18 +69,28 @@ module Finance
         if @balance.zero? then break end
 
         # Compute and record interest on the outstanding balance.
-        int = (@balance * rate.monthly).round(2)
-        interest = Interest.new(int, :period => @period)
-        @balance += interest.amount
-        @transactions << interest.dup
+        record_interest(rate)
 
         # Record payment.  Don't pay more than the outstanding balance.
-        if pmt.amount.abs > @balance then pmt.amount = -@balance end
-        @transactions << pmt.dup
-        @balance += pmt.amount
+        record_payment(pmt)
 
         @period += 1
       end
+    end
+
+    # @api private
+    def record_interest(rate)
+      int = (@balance * rate.monthly).round(2)
+      interest = Interest.new(int, :period => @period)
+      @balance += interest.amount
+      @transactions << interest.dup
+    end
+
+    # @api private
+    def record_payment(pmt)
+      if pmt.amount.abs > @balance then pmt.amount = -@balance end
+      @transactions << pmt.dup
+      @balance += pmt.amount
     end
 
     # compute the amortization of the principal
@@ -183,6 +193,55 @@ module Finance
     # @api public
     def payments
       @transactions.find_all(&:payment?).collect{ |p| p.amount }
+    end
+  end
+
+  # an interface for digesting an irregular cash flow stream and amortizing it
+  # @api public
+  class IrregularAmortization < Amortization
+    # @param options the options hash
+    # @option options [Finance::Rate] :rate the annual nominal interest rate, Finance::Rate object
+    # @option options [Numeric] :balance_due the time-zero cashflow
+    # @option options [Numeric] :payment_stream the stream of cashflows
+    # @option options [Numeric] :standard_payment, the 
+    def initialize(options={})
+      @initial_cashflow = options[:balance_due]
+      @cashflows = options[:payment_stream]
+      @standard_payment = options[:standard_payment]
+      @rate = options[:rate].monthly
+      @balance = @initial_cashflow
+      @results_hash = {}
+      @transactions ||= []
+      @period = 0
+    end
+
+    def digest      
+      # calculate interest and record each irregular payment
+      @cashflows.each do |cf|
+        if @balance.zero? then break end
+        pmt = Payment.new(cf, period: @period)
+
+        # calc and record interest
+        record_interest(@rate)
+
+        # record payment
+        record_payment(pmt)
+
+        @period += 1
+      end
+
+      resolve_balance
+      return self
+    end
+
+    # resolves any remaining balance with a 
+    # @api private
+    def resolve_balance
+      while @balance > 0
+        pmt = Payment.new(@standard_payment, period: @period)
+        record_interest(@rate)
+        record_payment(pmt)
+      end
     end
   end
 end
